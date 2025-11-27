@@ -1,5 +1,8 @@
-use ctrlsys::system::{Pair, System, SystemPool};
-use std::f64;
+use ctrlsys::{
+    pool::{SystemPool, link::SystemMux},
+    system::System,
+};
+use std::{f64, time::Instant};
 
 struct Filter;
 
@@ -38,7 +41,7 @@ impl System for Input {
 struct Test;
 
 impl System for Test {
-    type Input = Pair<f64, f64>;
+    type Input = (f64, f64);
     type Output = f64;
 
     fn update(&mut self, _time: f64, input: &Self::Input, output: &mut Self::Output) -> f64 {
@@ -60,11 +63,17 @@ fn main() {
 
     pool.link(&inp, &filter);
 
-    let mux = pool.mux(&inp, &filter);
+    let mux: SystemMux<_> = (&inp, &filter).into();
 
     let test = pool.add_system(Test);
 
     pool.link(&mux, &test);
 
+    let start = Instant::now();
+
     pool.simulate(10.0, 0.2).unwrap();
+
+    let dur = start.elapsed();
+
+    println!("Elapsed: {dur:?}");
 }

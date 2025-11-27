@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 
-use crate::system::SystemPool;
+use crate::pool::SystemPool;
 
 #[derive(Debug)]
 pub enum OrderError {
