@@ -1,18 +1,21 @@
 use ctrlsys::{
-    pool::{SystemPool, link::SystemMux},
-    system::System,
+    pool::SystemPool,
+    system::{
+        System,
+        discrete::{DiscreteSystem, holder::ZeroOrderHold},
+    },
 };
 use std::{f64, time::Instant};
 
 struct Filter;
 
-impl System for Filter {
-    type Input = f64;
-    type Output = f64;
+impl<'s> System<'s> for Filter {
+    type Input<'a> = &'a f64;
+    type Output<'a> = &'a mut f64;
 
-    fn update(&mut self, time: f64, input: &f64, output: &mut f64) -> f64 {
+    fn update(&mut self, time: f64, input: Self::Input<'s>, output: Self::Output<'s>) -> f64 {
         *output = *output * 0.95 + input * 0.05;
-        println!("f: {:.02}", *output);
+        // println!("f: {:.02}", *output);
         (time * 10.0 + 1.).floor() * 0.1
     }
 }
@@ -22,11 +25,11 @@ struct Input {
     value: f64,
 }
 
-impl System for Input {
-    type Input = ();
-    type Output = f64;
+impl<'s> System<'s> for Input {
+    type Input<'a> = ();
+    type Output<'a> = &'a mut f64;
 
-    fn update(&mut self, time: f64, _: &(), output: &mut f64) -> f64 {
+    fn update(&mut self, time: f64, _: (), output: Self::Output<'s>) -> f64 {
         if time >= self.step_time {
             self.value = 1.0;
             *output = 1.0;
@@ -40,14 +43,34 @@ impl System for Input {
 
 struct Test;
 
-impl System for Test {
-    type Input = (f64, f64);
-    type Output = f64;
+impl<'s> System<'s> for Test {
+    type Input<'a> = (&'a f64, &'a f64);
+    type Output<'a> = &'a mut f64;
 
-    fn update(&mut self, _time: f64, input: &Self::Input, output: &mut Self::Output) -> f64 {
+    fn update(&mut self, _time: f64, input: Self::Input<'s>, output: Self::Output<'s>) -> f64 {
         *output = input.0 - input.1;
-        println!("test: {output}");
+        // println!("test: {output}");
         f64::INFINITY
+    }
+}
+
+struct DiscreteTest {
+    state: [f64; 2],
+}
+
+impl DiscreteSystem for DiscreteTest {
+    type Input<'a> = &'a f64;
+    type Output<'a> = &'a mut f64;
+
+    fn calculate(&mut self, _time: f64, input: Self::Input<'_>, output: Self::Output<'_>) {
+        self.state[1] += 0.1 * self.state[0] + input;
+        self.state[0] += input;
+
+        *output = self.state[1];
+    }
+
+    fn timestep(&self) -> f64 {
+        0.05
     }
 }
 
@@ -61,17 +84,25 @@ fn main() {
         value: 0.0,
     });
 
-    pool.link(&inp, &filter);
+    pool.link(inp, &filter);
 
-    let mux: SystemMux<_> = (&inp, &filter).into();
+    let mux = (&inp, &filter);
 
     let test = pool.add_system(Test);
 
-    pool.link(&mux, &test);
+    pool.link(mux, &test);
 
     let start = Instant::now();
 
-    pool.simulate(10.0, 0.2).unwrap();
+    let discr = DiscreteTest { state: [0.0; 2] };
+
+    let dsys = discr.with_holder(ZeroOrderHold::new());
+
+    let discr = pool.add_system(dsys);
+
+    pool.link(test, &discr);
+
+    pool.simulate(10.0, 0.02).unwrap();
 
     let dur = start.elapsed();
 

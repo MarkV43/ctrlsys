@@ -25,6 +25,7 @@ pub trait SystemOut {
     fn add_links_to(&self, to_id: usize, base_offset: usize, links: &mut Vec<SystemLink>);
 }
 
+#[derive(Clone, Copy)]
 pub struct SystemRef<In, Out> {
     pub id: [usize; 1],
     pub(crate) _io: PhantomData<(In, Out)>,
@@ -176,6 +177,16 @@ where
         Self {
             ids,
             layouts: t_lay,
+            _io: PhantomData,
+        }
+    }
+}
+
+impl<I, O> From<SystemRef<I, O>> for SystemMux<O> {
+    fn from(value: SystemRef<I, O>) -> Self {
+        Self {
+            ids: value.ids().iter().copied().collect(),
+            layouts: value.layouts(),
             _io: PhantomData,
         }
     }

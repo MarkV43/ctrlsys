@@ -2,7 +2,6 @@ use std::{
     alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error},
     ops::{Deref, DerefMut},
     ptr::NonNull,
-    slice,
 };
 
 // This struct owns the memory.

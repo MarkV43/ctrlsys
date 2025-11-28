@@ -2,17 +2,15 @@ pub(crate) mod buffer;
 pub(crate) mod graph;
 pub mod link;
 
-use std::{borrow::Cow, collections::HashSet, hash::Hash, marker::PhantomData};
-
-use zerocopy::{FromBytes, Immutable, KnownLayout};
+use std::{collections::HashSet, hash::Hash, marker::PhantomData};
 
 use crate::{
     pool::{
         buffer::AlignedBuffer,
         graph::{OrderError, simulation_order},
-        link::{SystemIn, SystemLink, SystemOut, SystemRef},
+        link::{SystemIn, SystemLink, SystemMux, SystemOut, SystemRef},
     },
-    system::{RawSystem, System},
+    system::{RawSystem, System, SystemDataIn, SystemDataOut},
 };
 
 fn has_unique_elements<T>(iter: T) -> bool
@@ -27,7 +25,6 @@ where
 pub struct SystemPool {
     systems: Vec<Box<dyn RawSystem>>,
     links: Vec<SystemLink>,
-    outputs: Vec<Vec<u8>>,
 }
 
 impl SystemPool {
@@ -36,17 +33,7 @@ impl SystemPool {
         Self {
             systems: Vec::new(),
             links: Vec::new(),
-            outputs: Vec::new(),
         }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn get_output<In, Out>(&self, id: &SystemRef<In, Out>) -> &Out
-    where
-        Out: FromBytes + KnownLayout + Immutable,
-    {
-        FromBytes::ref_from_bytes(&self.outputs[id.id[0]]).expect("Indicated type was incorrect")
     }
 
     pub fn simulate(&mut self, total_time: f64, max_timestep: f64) -> Result<(), OrderError> {
@@ -58,86 +45,70 @@ impl SystemPool {
         }
 
         // Pre-allocate buffers
-        let mut input_buffers: Vec<AlignedBuffer> = (0..self.systems.len())
-            .map(|idx| {
-                let links = &links_to_node[idx];
+        let output_buffers: Vec<AlignedBuffer> = self
+            .systems
+            .iter()
+            .map(|sys| {
+                let size = sys.output_size();
+                let align = sys.output_alignment();
 
-                // Only allocate if we have mode than one input link
-                if links.len() > 1 {
-                    let input_size = links
-                        .iter()
-                        .map(|l| l.to_input_offset + l.num_bytes)
-                        .max()
-                        .unwrap_or(0);
-
-                    let required_align = self.systems[idx].input_alignment();
-
-                    AlignedBuffer::new(input_size, required_align)
-                } else {
-                    AlignedBuffer::new(0, 1)
-                }
+                // Note: AlignedBuffer::new(0, ...) handles 0-size correctly
+                // if you implemented it to handle size 0 gracefullly.
+                AlignedBuffer::new(size, align)
             })
             .collect();
+
+        let inp_max = links_to_node.iter().map(|x| x.len()).max().unwrap();
+
+        let mut input_ref_buffer = vec![&[][..]; inp_max];
+        let mut output_ref_buffer = vec![&mut [][..]]; // TODO change this when adding mux inputs
 
         let mut time = 0.0;
         while time < total_time {
             let mut next_time = f64::INFINITY;
 
-            let outputs_ptr = self.outputs.as_mut_ptr();
-
             for &idx in &order {
                 let links = &links_to_node[idx];
 
-                let input_cow: Cow<[u8]>;
-
-                if links.len() == 1 {
-                    // zero-copy path
-                    let link = &links[0];
-                    assert_eq!(link.to_input_offset, 0, "Single link must have zero offset");
-
-                    // let output_slice = &self.outputs[link.from_system_idx];
-
-                    // SAFETY: We know link.from_system_idx != idx
-                    // because of the assertion in `SystemPool::link`.
-                    // Therefore, this immutable borrow does not alias
-                    // the mutable borrow we will create for output_buffer.
-                    let output_slice = unsafe { &*(outputs_ptr.add(link.from_system_idx)) };
-
-                    input_cow = Cow::Borrowed(output_slice);
-                } else if links.len() > 1 {
-                    // copy path
-                    let input_buffer = &mut input_buffers[idx];
-                    for link in links {
-                        let output_slice = &self.outputs[link.from_system_idx];
-                        let (offset, len) = (link.to_input_offset, link.num_bytes);
-                        input_buffer[offset..offset + len].copy_from_slice(output_slice);
-                    }
-
-                    input_cow = Cow::Borrowed(input_buffer);
-                } else {
-                    // no inputs
-                    input_cow = Cow::Borrowed(&[]);
+                for (i, link) in links.iter().enumerate() {
+                    input_ref_buffer[i] = &output_buffers[link.from_system_idx][..];
                 }
 
-                let output_buffer = &mut self.outputs[idx];
+                // Here happens the error. We know we can do this, since we have checks for inputs and outputs not to clash,
+                // so the mutable and immutable references will never clash
+                let output_buf = &output_buffers[idx];
 
-                let nt = self.systems[idx].raw_update(time, input_cow, output_buffer);
+                let data_ptr = output_buf.as_ptr() as *mut u8;
+                let len = output_buf.len();
+
+                let output_slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, len) };
+
+                output_ref_buffer[0] = output_slice;
+
+                let nt = self.systems[idx].raw_update(
+                    time,
+                    &input_ref_buffer[..links.len()],
+                    &mut output_ref_buffer[..1],
+                );
                 next_time = next_time.min(nt);
             }
 
+            // eprintln!("Next: {}", next_time);
             time = next_time.min(time + max_timestep);
         }
 
         Ok(())
     }
 
-    pub fn add_system<'a, Sys, In, Out>(&mut self, sys: Sys) -> SystemRef<In, Out>
+    pub fn add_system<'a, Sys, In, Out>(&mut self, sys: Sys) -> SystemRef<In::Payload, Out::Payload>
     where
-        Sys: System<Input = In, Output = Out> + RawSystem + 'static,
-        // Out: FromBytes,
+        Sys: System<'a, Input<'a> = In, Output<'a> = Out> + RawSystem + 'static,
+        In: SystemDataIn<'a>,
+        Out: SystemDataOut<'a>,
+        In::Payload: Sized,
+        Out::Payload: Sized,
     {
         self.systems.push(Box::new(sys));
-        self.outputs.push(vec![0u8; size_of::<Out>()]);
 
         SystemRef {
             id: [self.systems.len() - 1],
@@ -145,11 +116,11 @@ impl SystemPool {
         }
     }
 
-    pub fn link<SO, SI>(&mut self, from: &SO, to: &SI)
+    pub fn link<SI, Out>(&mut self, from: impl Into<SystemMux<Out>>, to: &SI)
     where
-        SO: SystemOut,
-        SI: SystemIn<In = SO::Out>,
+        SI: SystemIn<In = Out>,
     {
+        let from: SystemMux<Out> = from.into();
         assert!(has_unique_elements(from.ids()));
         assert!(!from.ids().contains(&to.id()));
         from.add_links_to(to.id(), 0, &mut self.links)
