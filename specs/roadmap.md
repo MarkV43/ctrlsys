@@ -56,7 +56,14 @@ Residual, folded into Phase 0: `AlignedBuffer::new` has no `# Panics` section de
 
 ## Phase 2 — Close the two live UB sites
 
+> 🚧 In progress — see [specs/2026-07-31-close-live-ub-sites/](2026-07-31-close-live-ub-sites/) (branch `feature/close-live-ub-sites`)
+
 Both are Article 1 violations. Neither is subtle once located.
+
+Both violate Article 1 **twice**: the code is unsound, and the `unsafe` sits in solver
+and block code, which the article's placement rule forbids. The fix therefore moves the
+disjoint borrow into `pool::buffer` — a designated module — rather than repairing the
+pointer derivation in place, which would leave the placement violation standing.
 
 **`src/pool/mod.rs:79-84` — Miri-confirmed.**
 
