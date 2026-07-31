@@ -17,6 +17,8 @@ deletion phase.
 
 ## Phase 0 — Gates before work
 
+> 🚧 In progress — see [specs/2026-07-30-gates-before-work/](2026-07-30-gates-before-work/) (branch `feature/gates-before-work`)
+
 Nothing functional changes. Establishes the checks every later phase is measured by.
 
 - Empty `[dependencies]`; remove `zerocopy` (already unused by the current code).
