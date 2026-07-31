@@ -8,7 +8,17 @@ pub trait DiscreteSystem {
     type Input<'a>: SystemDataIn<'a>;
     type Output<'a>: SystemDataOut<'a>;
 
-    fn calculate(&mut self, time: f64, input: Self::Input<'_>, output: Self::Output<'_>);
+    /// Compute this step's output.
+    ///
+    /// `output` is taken by `&mut` rather than by value so that a holder wrapping this
+    /// system can lend the output out and still use it afterwards — `HeldSystem` reads
+    /// the computed value back through `payload_ref` and then overwrites it with the
+    /// held value. Passing by value would force the holder to duplicate the view, which
+    /// for the usual case where `Output` is `&mut T` means duplicating a mutable
+    /// reference through a raw pointer.
+    ///
+    /// Where `Output` is `&mut T`, write through it as `**output = value`.
+    fn calculate(&mut self, time: f64, input: Self::Input<'_>, output: &mut Self::Output<'_>);
 
     fn timestep(&self) -> f64;
 
@@ -67,20 +77,12 @@ where
         );
 
         if dt + 1e-10 >= req_dt {
-            let output_bytes = std::ptr::from_ref::<Self::Output<'s>>(&output);
-            #[expect(
-                clippy::undocumented_unsafe_blocks,
-                reason = "KNOWN UNSOUND — Phase 2 fixes this. `Output` is typically \
-                          `&mut T`, so `read()` duplicates a mutable reference: the \
-                          copy goes to `calculate` while the original stays live and \
-                          is used below by `payload_ref` and `update_output`, giving \
-                          two aliasing `&mut` to the same place. No true `// SAFETY:` \
-                          comment exists for this block, so none is written. See \
-                          specs/roadmap.md Phase 2."
-            )]
-            let output_clone = unsafe { output_bytes.read() };
+            let mut output = output;
 
-            self.system.calculate(time, input, output_clone);
+            // Lend the output to `calculate` and take it back, rather than duplicating
+            // it. This used to be a `ptr::read` through a raw pointer, which copied the
+            // `&mut` bit-for-bit so that two handles to the same place existed at once.
+            self.system.calculate(time, input, &mut output);
             self.holder.update_input(time, output.payload_ref());
             self.holder.update_output(time, output);
             self.last_time += req_dt;

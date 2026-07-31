@@ -62,11 +62,11 @@ impl DiscreteSystem for DiscreteTest {
     type Input<'a> = &'a f64;
     type Output<'a> = &'a mut f64;
 
-    fn calculate(&mut self, _time: f64, input: Self::Input<'_>, output: Self::Output<'_>) {
+    fn calculate(&mut self, _time: f64, input: Self::Input<'_>, output: &mut Self::Output<'_>) {
         self.state[1] += 0.1 * self.state[0] + input;
         self.state[0] += input;
 
-        *output = self.state[1];
+        **output = self.state[1];
     }
 
     fn timestep(&self) -> f64 {

@@ -63,20 +63,21 @@ where
         // SAFETY: `SystemDataIn::from_slices` requires one slice per link, each of at
         // least the leaf's size, aligned to the leaf's alignment, holding a valid
         // value, and immutable for `'a`. Length, alignment and validity are
-        // established by the caller's allocator: `SystemPool::simulate` gives every
-        // system an `AlignedBuffer` sized by `output_size()` and aligned by
+        // established by the caller's allocator: `BufferSet` gives every system an
+        // `AlignedBuffer` sized by `output_size()` and aligned by
         // `output_alignment()`, zero-initialised, and each input slice borrows one such
-        // buffer whole. Immutability for `'a` is established by `SystemPool::link`,
-        // whose `assert!(!from.ids().contains(&to.id()))` forbids a system from being
-        // its own producer, so no buffer is borrowed shared and unique in the same
-        // step. The slice *count* matching `Sys::Input`'s arity is the caller's
+        // buffer whole. Immutability for `'a` is established by
+        // `BufferSet::with_split`, which hands out these slices as ordinary shared
+        // references and asserts that none of them is the buffer borrowed mutably for
+        // `output`. The slice *count* matching `Sys::Input`'s arity is the caller's
         // obligation and is checked inside the impl.
         let i_ref = unsafe { Sys::Input::from_slices(input) };
         // SAFETY: `SystemDataOut::from_slices_mut` requires the same four properties
         // plus exclusivity. Size, alignment and validity come from the same
-        // `AlignedBuffer` as above. Exclusivity holds because `output` borrows the
-        // buffer belonging to *this* system, which the `link` assertion cited above
-        // keeps out of `input`, and because `simulate` visits one system at a time.
+        // `AlignedBuffer` as above. Exclusivity is the borrow checker's: `output`
+        // reaches this call as a genuine `&mut` handed out by `BufferSet::with_split`,
+        // which took it from `&mut self.buffers[out]` after the input borrows were
+        // taken, having asserted `out` is not among them.
         let o_ref = unsafe { Sys::Output::from_slices_mut(output) };
 
         Sys::update(self, time, i_ref, o_ref)
@@ -115,7 +116,8 @@ pub trait SystemDataIn<'a> {
     /// `RawSystem::output_alignment`, so length and alignment cannot disagree with the
     /// type. Validity holds because the buffer is zero-initialised and every leaf type
     /// used as a signal has a valid all-zero bit pattern. Non-mutation holds because
-    /// `SystemPool::link` forbids a system from feeding itself.
+    /// `BufferSet::with_split` produces these as ordinary shared references and
+    /// refuses to also hand out a mutable borrow of any of them.
     ///
     /// Arity is the obligation that remains genuinely open, which is why it is also
     /// checked at run time inside each implementation.
@@ -147,9 +149,11 @@ pub trait SystemDataOut<'a> {
     /// therefore be a valid `L_i`, which is what makes zero-initialisation a sound
     /// starting state rather than merely a convenient one.
     ///
-    /// Within this crate exclusivity is established by `SystemPool::link`, whose
-    /// `assert!(!from.ids().contains(&to.id()))` prevents a system from appearing as
-    /// its own producer, together with `simulate` updating one system at a time.
+    /// Within this crate exclusivity is the borrow checker's: `BufferSet::with_split`
+    /// obtains this slice from `&mut self.buffers[out]` — a real unique borrow, not a
+    /// pointer cast — after asserting that `out` is not among the indices borrowed as
+    /// inputs. `SystemPool::link` is what makes that assertion hold in practice, by
+    /// rejecting a system wired to itself.
     unsafe fn from_slices_mut(slices: &mut [&'a mut [u8]]) -> Self;
     fn copy_from_payload(&mut self, payload: &Self::Payload);
     fn payload_ref(&self) -> &Self::Payload;

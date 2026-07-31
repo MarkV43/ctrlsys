@@ -121,11 +121,41 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && 
 Miri is slow. Simulation tests that run under Miri are `#[cfg(miri)]`-gated to short
 `total_time` values; the full-length versions run on stable only.
 
+`tests/safety_docs.rs` is `#[cfg_attr(miri, ignore)]`. It reads `src/` from disk, and
+Miri isolates filesystem access, so it fails at `opendir` before doing anything —
+which meant `cargo +nightly miri test` never passed at all between `cdd17e9` and
+Phase 2. Nothing is lost by skipping it: it is a static scan of source text and
+executes no crate code. Do **not** reach for `-Zmiri-disable-isolation` to accommodate
+it; that would weaken every other Miri run.
+
+Run Miri under **both** aliasing models. They are different claims, and on the Phase 2
+baseline they blamed different lines for the same bug — Stacked Borrows the retag in
+the solver, Tree Borrows the eventual write inside innocent user block code:
+
+```bash
+MIRIFLAGS=-Zmiri-tree-borrows cargo +nightly miri test
+```
+
 ## Architecture
 
 Layers, innermost first. Each is testable without the one above it.
 
 ### `system` — the signal interface (contains `unsafe`)
+
+The block-author side:
+
+```rust
+pub trait DiscreteSystem {
+    // `output` is `&mut`, not by value, so a holder can lend it to `calculate` and
+    // still read it back afterwards. Write through it as `**output = value`.
+    fn calculate(&mut self, time: f64, input: Self::Input<'_>, output: &mut Self::Output<'_>);
+    fn timestep(&self) -> f64;
+}
+```
+
+Passing by value forced `HeldSystem` to duplicate the output view through a raw
+pointer, which for the usual `&mut T` case duplicated a mutable reference. Article 6
+makes this contract public API, so the change is recorded rather than assumed.
 
 ```rust
 pub trait SystemDataIn<'a> {
@@ -149,11 +179,30 @@ tiling, and no copies.
 Implemented for `()`, `&'a T`, `&'a mut T`, and tuples of references. Extending to
 higher arities means adding impls, not computing layouts.
 
-### `pool::buffer` — aligned storage (contains `unsafe`)
+### `pool::buffer` — aligned storage and the disjoint borrow (contains `unsafe`)
 
 `AlignedBuffer`: one `alloc_zeroed` allocation per system, sized and aligned from
 `RawSystem::output_size()` / `output_alignment()`, with a zero-size path that does not
 allocate. This is what makes the leaf casts in `from_slices` aligned by construction.
+
+`BufferSet` owns those buffers and provides the one borrow the solver needs:
+`with_split(out, inputs, f)` lends buffer `out` mutably and every buffer in `inputs`
+immutably, for the duration of `f`. It asserts `out ∉ inputs` first.
+
+This lives here rather than in the solver because Article 1's placement rule puts
+`unsafe` in buffer allocation and forbids it in solver code. `SystemPool::simulate`
+contains no `unsafe` at all as a result.
+
+Because each `AlignedBuffer` owns a **separate** heap allocation, the whole operation
+needs exactly one `unsafe` op — extending an input reference's lifetime so the scratch
+vector holding them can be reused across steps. The mutable borrow is an ordinary
+`&mut self.buffers[out]`, taken after the input borrows are released; it touches a
+different allocation, so it cannot invalidate them.
+
+The callback shape is not stylistic. Returning the borrows would tie them to a single
+`&mut self`, and a scratch vector hoisted out of the solver's loop cannot hold
+references shorter-lived than itself. Keeping them inside a callback is what lets the
+steady state allocate nothing per step.
 
 ### `pool::link` — wiring (safe)
 
@@ -220,3 +269,5 @@ waits until rate-independence holds.
 | Observation | `probe` every step, non-invasive | Returns `f64::INFINITY`, adding no time event. A periodic `sample` would perturb the step sequence, so it waits for rate-independence. |
 | Time delivery | Absolute only | See `mission.md` Article 6. |
 | Error style | `assert!` for user contracts | See `mission.md` Article 4. |
+| Soundness checks | Always on, even for internal invariants | A check an `unsafe` block relies on is never `debug_assert!`: compiling it out turns a panic into UB in the least diagnosable build. Extends Article 4. |
+| Discrete `calculate` | Takes `&mut Self::Output<'_>` | Lets a holder lend the output and read it back without duplicating a `&mut`. Costs block authors `**output` instead of `*output`. |

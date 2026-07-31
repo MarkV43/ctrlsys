@@ -53,6 +53,14 @@ fn is_unsafe_decl(trimmed: &str) -> bool {
     })
 }
 
+// Skipped under Miri: this test reads `src/` from disk, and Miri isolates filesystem
+// access by default, so `opendir` fails before the test can do anything. Disabling
+// isolation crate-wide to accommodate it would weaken every other Miri run.
+//
+// Nothing is lost. This is a static scan of source text for `# Safety` headings — it
+// executes no crate code, so there is no aliasing, alignment or initialisation
+// behaviour for Miri to check. `cargo test` runs it on every build.
+#[cfg_attr(miri, ignore = "reads src/ from disk; Miri isolates filesystem access")]
 #[test]
 fn every_unsafe_item_documents_its_safety_contract() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

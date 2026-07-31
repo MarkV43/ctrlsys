@@ -5,7 +5,8 @@
 **In:**
 
 1. `src/pool/mod.rs` — the Miri-confirmed SharedReadOnly→Unique retag.
-2. `src/system/discrete/mod.rs` — the `ptr::read` that duplicates a `&mut`.
+2. `src/system/discrete/mod.rs` — the `ptr::read` that duplicates a `&mut`. (Turned out
+   **not** to be UB; removed anyway. See the Context section.)
 3. A simulation test that actually runs under `cargo +nightly miri test`.
 4. Re-checking the `// SAFETY:` comments and `# Safety` contracts Phase 0 wrote, since
    the pool fix changes what establishes non-aliasing.
@@ -17,7 +18,9 @@
   *timing* question, not a soundness one, and belongs to the discrete-hardening phase.
   Changing it here would move numbers in a phase whose whole claim is that numbers do
   not move.
-- The empty-pool `max().unwrap()` panic and the other solver-robustness items — Phase 3.
+- The other solver-robustness items — Phase 3. (The empty-pool `max().unwrap()` panic
+  went away by itself: the reduction it lived in disappeared with the rewrite. Verified,
+  and noted in `validation.md`, rather than claimed.)
 - Anything about `output_ref_buffer` being hard-coded to one slice; mux outputs are a
   stated non-goal.
 
@@ -86,25 +89,45 @@ adding no `unsafe` anywhere, and leaving `DiscreteSystem::calculate`'s signature
 so the block-author contract is unchanged. Only two impls of `SystemDataOut` exist, so
 the cost is small.
 
-If the higher-ranked bounds fight back, the fallback is changing `calculate` to take
-`&mut Self::Output<'_>`. Equally sound, but Article 6 makes the block-author contract
-public API, so that variant requires a `tech-stack.md` note rather than a quiet edit.
-The spec names the fallback so the phase does not stall on type machinery.
+**Outcome: the bounds did fight back, and the fallback was taken.** The GAT itself
+compiled — trait, both impls, all fine. It broke at the use site: relating the reborrow
+to the concrete output type requires
+`for<'b> Sys::Output<'s>: SystemDataOut<'s, Reborrowed<'b> = Sys::Output<'b>>`, which
+the compiler cannot reconcile with the pre-existing
+`for<'b> Sys::Output<'b>: SystemDataOut<'b>` bound — it reports both clauses as
+candidate impls and gives up with six inference errors.
+
+So `calculate` takes `&mut Self::Output<'_>`. Equally sound and equally free of
+`unsafe`, at the cost of a block-author-facing contract change: `**output = value`
+where it was `*output = value`. Article 6 makes that public API, so it is recorded in
+`tech-stack.md`. The GAT was reverted rather than left in place unused.
 
 ## Context
 
-### The second site has never actually been observed failing
+### The second site was not undefined behaviour — the roadmap over-claimed
 
-Miri aborts on the first error, so `src/system/discrete/mod.rs`'s `ptr::read` is
-**unconfirmed**. It was found by reading, and the reading argument is strong — `Output`
-is typically `&'s mut T`, `read()` duplicates it, the copy goes to `calculate` while
-the original is still used by `payload_ref()` and `update_output()` — but that is not
-the same as a diagnostic.
+This was written as an open question, and it now has an answer worth recording plainly.
 
-The plan therefore fixes the pool site first and re-runs Miri specifically to find out.
-All three outcomes are reportable, including "Miri stays clean", which would mean the
-site is real but not exercised by the demo model. What must not happen is the docs
-quietly calling it confirmed because it was fixed.
+With the pool site fixed, both borrow models run the demo and the whole test suite
+clean. The `ptr::read` branch executes roughly 200 times per demo run, so this is not a
+coverage gap — Miri simply does not consider it a violation.
+
+The reason is that the roadmap's argument describes the code's *shape* rather than any
+execution. `ptr::read` copies the reference bit for bit, so both handles carry the same
+borrow tag and a tag-tracking model cannot tell them apart. More decisively, the uses
+are **sequential**: `output_clone` is moved into `calculate` and never touched again,
+and the original is used only after `calculate` returns. There is no moment where two
+`&mut` are used in an interleaved way.
+
+It was still removed, on two grounds that survive the correction:
+
+- Article 1's placement rule forbids `unsafe` in block code whether or not it is sound.
+- A `&mut` duplicated by bits is fragile with respect to `noalias`. It is fine only
+  while nobody uses the original during `calculate` — an invariant nothing enforces,
+  which a future edit to those four lines could break with no diagnostic to catch it.
+
+So the phase closed **one confirmed UB site and one latent hazard**. The roadmap's
+"two live UB sites" should be read as one live and one latent.
 
 ### Both borrow models, because they are different claims
 

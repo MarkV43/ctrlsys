@@ -4,6 +4,139 @@ use std::{
     ptr::NonNull,
 };
 
+/// The solver's per-system output buffers, plus the one borrow operation it needs.
+///
+/// # Why this type exists
+///
+/// Each step, a system needs its own output buffer borrowed **uniquely** while the
+/// buffers of its producers are borrowed **shared**, all at once. Expressed directly
+/// over a `Vec<AlignedBuffer>` that is a disjoint-index borrow, which the borrow
+/// checker cannot see is disjoint.
+///
+/// The solver used to solve this by casting a shared buffer's `as_ptr()` to `*mut u8`
+/// and calling `from_raw_parts_mut` on it. That was undefined behaviour — a shared
+/// borrow grants no write permission, so the cast retagged a `SharedReadOnly` tag as
+/// Unique — and it put `unsafe` in the solver, which `specs/mission.md` Article 1
+/// forbids independently of whether it is sound.
+///
+/// The operation lives here instead, in a module Article 1 designates for buffer
+/// allocation, so the aliasing argument sits next to the allocation it depends on.
+///
+/// # What makes it sound
+///
+/// Every `AlignedBuffer` owns a **separate heap allocation**. The `Vec` holds only the
+/// `(ptr, layout, len)` structs; the bytes a caller reads and writes live elsewhere,
+/// one allocation per system. So once the input references have been taken and the
+/// borrows of the `Vec` itself released, borrowing one buffer mutably cannot invalidate
+/// them: it touches a different allocation entirely.
+///
+/// That is why [`BufferSet::with_split`] needs exactly one `unsafe` operation — a
+/// lifetime extension — rather than a raw-pointer reconstruction of the whole
+/// borrowing pattern.
+pub(crate) struct BufferSet {
+    buffers: Vec<AlignedBuffer>,
+    /// Scratch for the input slice handed to `with_split`'s callback, kept here so the
+    /// allocation is reused across steps instead of being rebuilt per system per step.
+    ///
+    /// The `'static` is not true. It is a lifetime extension performed inside
+    /// `with_split` and valid only for that call. The invariant that makes it
+    /// tolerable: **this vector is empty except while `with_split` is running.** It is
+    /// cleared on entry and on exit, never returned, never borrowed out, and no other
+    /// method touches it.
+    scratch: Vec<&'static [u8]>,
+}
+
+impl BufferSet {
+    /// Allocate one buffer per system, from each system's reported size and alignment.
+    pub(crate) fn new(sizes_and_aligns: impl Iterator<Item = (usize, usize)>) -> Self {
+        Self {
+            buffers: sizes_and_aligns
+                .map(|(size, align)| AlignedBuffer::new(size, align))
+                .collect(),
+            scratch: Vec::new(),
+        }
+    }
+
+    /// Borrow buffer `out` mutably and every buffer named in `inputs` immutably, for
+    /// the duration of `f`.
+    ///
+    /// The callback shape is deliberate. An equivalent
+    /// `-> (&mut [u8], Vec<&[u8]>)` would force a fresh allocation per call: the
+    /// returned references carry a lifetime tied to a single `&mut self`, and a vector
+    /// hoisted out of the solver's loop cannot hold references shorter-lived than
+    /// itself. Keeping the borrows inside a callback lets the scratch storage live in
+    /// `self` and be reused.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `out` or any index in `inputs` is out of range, or if `out` appears in
+    /// `inputs`.
+    ///
+    /// These are `assert!` rather than `debug_assert!` even though the invariant is one
+    /// this crate maintains — `SystemPool::link` rejects a system that feeds itself, so
+    /// user code cannot reach a violation directly. `specs/mission.md` Article 4 would
+    /// permit `debug_assert!` on that reading. It is always-on regardless, because it
+    /// is the precondition the lifetime extension below relies on: a soundness check
+    /// compiled out in release converts a panic into undefined behaviour in exactly the
+    /// build where it is least diagnosable.
+    pub(crate) fn with_split<R>(
+        &mut self,
+        out: usize,
+        inputs: &[usize],
+        f: impl FnOnce(&mut [u8], &[&[u8]]) -> R,
+    ) -> R {
+        let count = self.buffers.len();
+        assert!(
+            out < count,
+            "output buffer index {out} out of range (pool has {count} systems)"
+        );
+
+        self.scratch.clear();
+
+        for &idx in inputs {
+            assert!(
+                idx < count,
+                "input buffer index {idx} out of range (pool has {count} systems)"
+            );
+            assert!(
+                idx != out,
+                "system {out} would borrow its own output buffer as an input; \
+                 SystemPool::link rejects self-feeding links, so reaching this means \
+                 the link table was built incorrectly"
+            );
+
+            let slice: &[u8] = &self.buffers[idx];
+
+            // SAFETY: extends `slice` to `'static` so it can be stored in `self.scratch`
+            // and the allocation reused across calls. The reference does not actually
+            // live that long; three things keep it valid for as long as it is readable:
+            //
+            // 1. It points into `self.buffers[idx]`'s own heap allocation, made by
+            //    `AlignedBuffer::new` and freed only by its `Drop`. `self` is borrowed
+            //    for this whole call, so no buffer can be added, removed or dropped
+            //    while the extended reference exists.
+            // 2. The only mutable borrow taken below is of `self.buffers[out]`, and
+            //    `idx != out` is asserted above. Because each buffer owns a separate
+            //    allocation, that borrow cannot alias these bytes even transiently.
+            // 3. The scratch is cleared on entry and again on exit, and is never
+            //    returned or borrowed out of this type, so no extended reference is
+            //    observable after `f` returns.
+            let extended: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &[u8]>(slice) };
+
+            self.scratch.push(extended);
+        }
+
+        // Field-level split borrow: `self.buffers` mutably, `self.scratch` immutably.
+        // Both are safe references; the covariance of `&[&'static [u8]]` into
+        // `&[&'a [u8]]` is what lets the scratch be handed to `f` without a second cast.
+        let output: &mut [u8] = &mut self.buffers[out];
+        let result = f(output, &self.scratch);
+
+        self.scratch.clear();
+        result
+    }
+}
+
 // This struct owns the memory.
 // We use u128 to guarantee 16-byte alignment, which covers
 // u8, u16, u32, u64, f64, and most SIMD types.

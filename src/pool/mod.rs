@@ -6,7 +6,7 @@ use std::{collections::HashSet, hash::Hash, marker::PhantomData};
 
 use crate::{
     pool::{
-        buffer::AlignedBuffer,
+        buffer::BufferSet,
         graph::{OrderError, simulation_order},
         link::{SystemIn, SystemLink, SystemMux, SystemOut, SystemRef},
     },
@@ -57,12 +57,14 @@ impl SystemPool {
     ///
     /// # Panics
     ///
-    /// Panics if the pool contains no systems, because the per-system link counts are
-    /// reduced with `max().unwrap()` over an empty iterator. Handling zero systems is
-    /// a `specs/roadmap.md` Phase 3 item.
+    /// Panics if a link names a system index the pool does not contain, which cannot
+    /// happen through the public API: indices are handed out by `add_system`.
     ///
-    /// Also panics if a link names a system index the pool does not contain, which
-    /// cannot happen through the public API: indices are handed out by `add_system`.
+    /// An empty pool no longer panics. It used to, on a `max().unwrap()` over the
+    /// per-system link counts; that reduction disappeared when the input slices moved
+    /// behind `BufferSet::with_split`, which takes the indices for one system at a
+    /// time and never needs the maximum arity. `specs/roadmap.md`'s
+    /// solver-hardening item for zero systems is therefore already satisfied here.
     pub fn simulate(&mut self, total_time: f64, max_timestep: f64) -> Result<(), OrderError> {
         let order = simulation_order(self)?;
 
@@ -71,24 +73,16 @@ impl SystemPool {
             links_to_node[link.to_system_idx].push(link.clone());
         }
 
-        // Pre-allocate buffers
-        let output_buffers: Vec<AlignedBuffer> = self
-            .systems
-            .iter()
-            .map(|sys| {
-                let size = sys.output_size();
-                let align = sys.output_alignment();
+        // Pre-allocate buffers. `AlignedBuffer::new(0, ..)` handles a zero-size output
+        // without allocating.
+        let mut output_buffers = BufferSet::new(
+            self.systems
+                .iter()
+                .map(|sys| (sys.output_size(), sys.output_alignment())),
+        );
 
-                // Note: AlignedBuffer::new(0, ...) handles 0-size correctly
-                // if you implemented it to handle size 0 gracefullly.
-                AlignedBuffer::new(size, align)
-            })
-            .collect();
-
-        let inp_max = links_to_node.iter().map(Vec::len).max().unwrap();
-
-        let mut input_ref_buffer = vec![&[][..]; inp_max];
-        let mut output_ref_buffer = [&mut [][..]]; // TODO change this when adding mux inputs
+        // Reused across steps so the per-system source list is not rebuilt each time.
+        let mut input_idx_buffer: Vec<usize> = Vec::new();
 
         let mut time = 0.0;
         while time < total_time {
@@ -97,36 +91,21 @@ impl SystemPool {
             for &idx in &order {
                 let links = &links_to_node[idx];
 
-                for (i, link) in links.iter().enumerate() {
-                    input_ref_buffer[i] = &output_buffers[link.from_system_idx][..];
-                }
+                input_idx_buffer.clear();
+                input_idx_buffer.extend(links.iter().map(|link| link.from_system_idx));
 
-                // Here happens the error. We know we can do this, since we have checks for inputs and outputs not to clash,
-                // so the mutable and immutable references will never clash
-                let output_buf = &output_buffers[idx];
-
-                let data_ptr = output_buf.as_ptr().cast_mut();
-                let len = output_buf.len();
-
-                #[expect(
-                    clippy::undocumented_unsafe_blocks,
-                    reason = "KNOWN UNSOUND — Phase 2 fixes this. `output_buf` is a \
-                              *shared* borrow, so casting its `as_ptr()` to `*mut u8` \
-                              does not grant write permission and this call retags a \
-                              SharedReadOnly tag as Unique. Miri confirms it. The \
-                              aliasing argument in the comment above is correct in \
-                              spirit and not established by this code. No true \
-                              `// SAFETY:` comment exists, so none is written. See \
-                              specs/roadmap.md Phase 2."
-                )]
-                let output_slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, len) };
-
-                output_ref_buffer[0] = output_slice;
-
-                let nt = self.systems[idx].raw_update(
-                    time,
-                    &input_ref_buffer[..links.len()],
-                    &mut output_ref_buffer[..1],
+                // The disjoint borrow lives in `pool::buffer`: this system's output is
+                // borrowed uniquely while its producers' outputs are borrowed shared.
+                // `with_split` asserts the disjointness that makes it sound, so there is
+                // no `unsafe` in the solver — see `specs/mission.md` Article 1.
+                let system = &mut self.systems[idx];
+                let nt = output_buffers.with_split(
+                    idx,
+                    &input_idx_buffer,
+                    |output_slice, input_slices| {
+                        let mut output_ref_buffer = [output_slice]; // TODO extend for mux outputs
+                        system.raw_update(time, input_slices, &mut output_ref_buffer)
+                    },
                 );
                 next_time = next_time.min(nt);
             }
@@ -169,9 +148,10 @@ impl SystemPool {
     /// than `debug_assert!`.
     ///
     /// The second check is load-bearing for soundness, not merely for sanity: it is
-    /// what guarantees no buffer is borrowed shared (as an input) and unique (as an
-    /// output) in the same step, which every `// SAFETY:` comment in
-    /// `RawSystem::raw_update` cites.
+    /// what keeps a system's own buffer out of its input list, which is the
+    /// precondition `BufferSet::with_split` asserts before borrowing one buffer
+    /// mutably and the rest shared. Violating it does not reach undefined behaviour —
+    /// `with_split` panics — but it is what makes that panic unreachable.
     pub fn link<SI, Out>(&mut self, from: impl Into<SystemMux<Out>>, to: &SI)
     where
         SI: SystemIn<In = Out>,
