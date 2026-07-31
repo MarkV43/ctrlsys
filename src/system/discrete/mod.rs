@@ -45,6 +45,14 @@ where
         let req_dt = self.system.timestep();
         let mut dt = time - self.last_time;
 
+        #[expect(
+            clippy::float_cmp,
+            reason = "Phase 7 owns this, as with the matching sentinel test in \
+                      `holder.rs`. Compared against the `f64::MIN` sentinel rather \
+                      than a computed value, so exact equality is correct; changing \
+                      it belongs with Phase 7's first-sample rework. See \
+                      specs/roadmap.md Phase 7."
+        )]
         if self.last_time == f64::MIN {
             self.last_time = time;
             dt = time - self.last_time;
@@ -58,7 +66,17 @@ where
         );
 
         if dt + 1e-10 >= req_dt {
-            let output_bytes = &output as *const Self::Output<'s>;
+            let output_bytes = std::ptr::from_ref::<Self::Output<'s>>(&output);
+            #[expect(
+                clippy::undocumented_unsafe_blocks,
+                reason = "KNOWN UNSOUND — Phase 2 fixes this. `Output` is typically \
+                          `&mut T`, so `read()` duplicates a mutable reference: the \
+                          copy goes to `calculate` while the original stays live and \
+                          is used below by `payload_ref` and `update_output`, giving \
+                          two aliasing `&mut` to the same place. No true `// SAFETY:` \
+                          comment exists for this block, so none is written. See \
+                          specs/roadmap.md Phase 2."
+            )]
             let output_clone = unsafe { output_bytes.read() };
 
             self.system.calculate(time, input, output_clone);

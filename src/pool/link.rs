@@ -4,7 +4,19 @@ use std::{marker::PhantomData, mem::MaybeUninit, ptr::addr_of};
 pub struct SystemLink {
     pub(crate) from_system_idx: usize,
     pub(crate) to_system_idx: usize,
+    #[expect(
+        dead_code,
+        reason = "Phase 4 deletes both fields. They are flat-buffer bookkeeping that \
+                  slice-per-link made unnecessary — the solver reads neither, which \
+                  is why the compiler reports them as never read. Removing them now \
+                  means also removing `SystemLayout` and `SystemOut::layouts`, which \
+                  is Phase 4's whole content. See specs/roadmap.md Phase 4."
+    )]
     pub(crate) to_input_offset: usize,
+    #[expect(
+        dead_code,
+        reason = "Phase 4 deletes this, see `to_input_offset` above."
+    )]
     pub(crate) num_bytes: usize,
 }
 
@@ -56,7 +68,7 @@ impl<In, Out> SystemOut for SystemRef<In, Out> {
             to_system_idx: to_id,
             to_input_offset: base_offset,
             num_bytes: size_of::<Out>(),
-        })
+        });
     }
 }
 
@@ -106,6 +118,16 @@ where
         let t_ptr;
         let u_ptr;
 
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "Phase 4 deletes this. The whole `MaybeUninit` + `addr_of!` \
+                      offset computation is vestigial: slice-per-link means the \
+                      solver never reads `layouts`, and the compiler already reports \
+                      `to_input_offset` and `num_bytes` as never read. Documenting \
+                      unsafe operations in code scheduled for deletion is waste. See \
+                      specs/roadmap.md Phase 4."
+        )]
         unsafe {
             t_ptr = addr_of!((*base_ptr).0);
             u_ptr = addr_of!((*base_ptr).1);
@@ -114,10 +136,10 @@ where
         let t_off = t_ptr.addr() - base_ptr.addr();
         let u_off = u_ptr.addr() - base_ptr.addr();
 
-        for tl in t_lay.iter_mut() {
+        for tl in &mut t_lay {
             tl.offset += t_off;
         }
-        for ul in u_lay.iter_mut() {
+        for ul in &mut u_lay {
             ul.offset += u_off;
         }
 
@@ -151,6 +173,14 @@ where
         let u_ptr;
         let v_ptr;
 
+        #[expect(
+            clippy::undocumented_unsafe_blocks,
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "Phase 4 deletes this, for the reason given on the two-input \
+                      impl above. Note that this impl also carries the missing \
+                      `v.ids()` bug that deletion removes. See specs/roadmap.md \
+                      Phase 4."
+        )]
         unsafe {
             t_ptr = addr_of!((*base_ptr).0);
             u_ptr = addr_of!((*base_ptr).1);
@@ -161,13 +191,13 @@ where
         let u_off = u_ptr.addr() - base_ptr.addr();
         let v_off = v_ptr.addr() - base_ptr.addr();
 
-        for tl in t_lay.iter_mut() {
+        for tl in &mut t_lay {
             tl.offset += t_off;
         }
-        for ul in u_lay.iter_mut() {
+        for ul in &mut u_lay {
             ul.offset += u_off;
         }
-        for vl in v_lay.iter_mut() {
+        for vl in &mut v_lay {
             vl.offset += v_off;
         }
 
@@ -185,7 +215,7 @@ where
 impl<I, O> From<SystemRef<I, O>> for SystemMux<O> {
     fn from(value: SystemRef<I, O>) -> Self {
         Self {
-            ids: value.ids().iter().copied().collect(),
+            ids: value.ids().to_vec(),
             layouts: value.layouts(),
             _io: PhantomData,
         }

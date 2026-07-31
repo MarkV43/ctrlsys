@@ -27,6 +27,12 @@ pub struct SystemPool {
     links: Vec<SystemLink>,
 }
 
+impl Default for SystemPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemPool {
     #[must_use]
     pub fn new() -> Self {
@@ -36,6 +42,27 @@ impl SystemPool {
         }
     }
 
+    /// Run the model from `t = 0` to `total_time`.
+    ///
+    /// The execution order is computed once, up front. Each step every block is
+    /// updated in that order and returns the next absolute time it wants to be called
+    /// at; the step advances to the earliest such time, capped by `max_timestep`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OrderError`] if no execution order exists — that is, if the graph
+    /// contains an algebraic loop: a cycle in which no block breaks direct
+    /// feedthrough. Nothing is simulated in that case; the error is raised during
+    /// setup, before any block is updated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool contains no systems, because the per-system link counts are
+    /// reduced with `max().unwrap()` over an empty iterator. Handling zero systems is
+    /// a `specs/roadmap.md` Phase 3 item.
+    ///
+    /// Also panics if a link names a system index the pool does not contain, which
+    /// cannot happen through the public API: indices are handed out by `add_system`.
     pub fn simulate(&mut self, total_time: f64, max_timestep: f64) -> Result<(), OrderError> {
         let order = simulation_order(self)?;
 
@@ -58,10 +85,10 @@ impl SystemPool {
             })
             .collect();
 
-        let inp_max = links_to_node.iter().map(|x| x.len()).max().unwrap();
+        let inp_max = links_to_node.iter().map(Vec::len).max().unwrap();
 
         let mut input_ref_buffer = vec![&[][..]; inp_max];
-        let mut output_ref_buffer = vec![&mut [][..]]; // TODO change this when adding mux inputs
+        let mut output_ref_buffer = [&mut [][..]]; // TODO change this when adding mux inputs
 
         let mut time = 0.0;
         while time < total_time {
@@ -78,9 +105,20 @@ impl SystemPool {
                 // so the mutable and immutable references will never clash
                 let output_buf = &output_buffers[idx];
 
-                let data_ptr = output_buf.as_ptr() as *mut u8;
+                let data_ptr = output_buf.as_ptr().cast_mut();
                 let len = output_buf.len();
 
+                #[expect(
+                    clippy::undocumented_unsafe_blocks,
+                    reason = "KNOWN UNSOUND — Phase 2 fixes this. `output_buf` is a \
+                              *shared* borrow, so casting its `as_ptr()` to `*mut u8` \
+                              does not grant write permission and this call retags a \
+                              SharedReadOnly tag as Unique. Miri confirms it. The \
+                              aliasing argument in the comment above is correct in \
+                              spirit and not established by this code. No true \
+                              `// SAFETY:` comment exists, so none is written. See \
+                              specs/roadmap.md Phase 2."
+                )]
                 let output_slice = unsafe { std::slice::from_raw_parts_mut(data_ptr, len) };
 
                 output_ref_buffer[0] = output_slice;
@@ -116,6 +154,24 @@ impl SystemPool {
         }
     }
 
+    /// Wire the outputs of `from` to the input of `to`.
+    ///
+    /// Type agreement is a compile-time property: the `SI: SystemIn<In = Out>` bound
+    /// means a producer whose output type differs from the consumer's input type does
+    /// not compile (`specs/mission.md` Article 2). What remains checked at run time is
+    /// below.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `from` names the same producer twice, or if `to` appears among the
+    /// producers in `from` — a system feeding itself. Both are user contract
+    /// violations, so per `specs/mission.md` Article 4 the checks are always on rather
+    /// than `debug_assert!`.
+    ///
+    /// The second check is load-bearing for soundness, not merely for sanity: it is
+    /// what guarantees no buffer is borrowed shared (as an input) and unique (as an
+    /// output) in the same step, which every `// SAFETY:` comment in
+    /// `RawSystem::raw_update` cites.
     pub fn link<SI, Out>(&mut self, from: impl Into<SystemMux<Out>>, to: &SI)
     where
         SI: SystemIn<In = Out>,
@@ -123,6 +179,6 @@ impl SystemPool {
         let from: SystemMux<Out> = from.into();
         assert!(has_unique_elements(from.ids()));
         assert!(!from.ids().contains(&to.id()));
-        from.add_links_to(to.id(), 0, &mut self.links)
+        from.add_links_to(to.id(), 0, &mut self.links);
     }
 }

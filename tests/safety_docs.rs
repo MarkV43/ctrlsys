@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -57,7 +59,11 @@ fn every_unsafe_item_documents_its_safety_contract() {
     let mut files = Vec::new();
     rs_files(&src, &mut files);
     files.sort();
-    assert!(!files.is_empty(), "no sources found under {}", src.display());
+    assert!(
+        !files.is_empty(),
+        "no sources found under {}",
+        src.display()
+    );
 
     let mut offenders = Vec::new();
     for path in &files {

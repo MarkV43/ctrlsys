@@ -102,6 +102,16 @@ pub(crate) fn simulation_order(pool: &SystemPool) -> Result<Vec<usize>, OrderErr
 /// Tarjan's SCC implementation returning `(comp_of, comps)`
 fn tarjan_scc(adj: &Vec<Vec<usize>>) -> (Vec<usize>, Vec<Vec<usize>>) {
     #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_sign_loss,
+        reason = "Phase 5 rewrites this. The casts exist only because `index` uses \
+                  `isize` with `-1` as an unvisited sentinel; an `Option<usize>` \
+                  removes them entirely. Phase 5 also has to delete the condensation \
+                  pass and fix intra-SCC ordering here, so changing the \
+                  representation now would collide with it. See specs/roadmap.md \
+                  Phase 5."
+    )]
     fn strongconnect(
         v: usize,
         adj: &Vec<Vec<usize>>,

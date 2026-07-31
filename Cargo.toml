@@ -3,5 +3,12 @@ name = "ctrlsys"
 version = "0.0.1"
 edition = "2024"
 
+# Runtime dependencies: none, and this section stays empty.
+# Adding one requires amending specs/tech-stack.md first.
 [dependencies]
-zerocopy = { version = "0.8.27", features = ["derive"] }
+
+# criterion is deliberately absent — specs/tech-stack.md scopes it to later phases.
+[dev-dependencies]
+proptest = "1"
+trybuild = "1"
+approx = "0.5"
