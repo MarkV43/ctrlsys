@@ -97,14 +97,15 @@ where
     fn update_input(&mut self, time: f64, input: &Self::Payload) {
         #[expect(
             clippy::float_cmp,
-            reason = "Phase 7 owns this. The comparison is against the `f64::MIN` \
-                      sentinel written at construction, not a computed value, so \
-                      exact equality is correct as written. It is left alone here \
-                      because Phase 7 reworks first-sample handling in this impl — \
-                      `update_output` divides by `curr_time - last_time`, which is \
-                      zero on the first sample and yields NaN — and any change to \
-                      how initialisation is detected belongs with that fix, not with \
-                      a lint sweep. See specs/roadmap.md Phase 7."
+            reason = "The discrete-system hardening phase owns this. The comparison \
+                      is against the `f64::MIN` sentinel written at construction, \
+                      not a computed value, so exact equality is correct as written. \
+                      It is left alone here because that phase reworks first-sample \
+                      handling in this impl — `update_output` divides by \
+                      `curr_time - last_time`, which is zero on the first sample and \
+                      yields NaN — and any change to how initialisation is detected \
+                      belongs with that fix, not with a lint sweep. See \
+                      specs/roadmap.md, Phase 8 at time of writing."
         )]
         let initialized = self.curr_time != f64::MIN;
 

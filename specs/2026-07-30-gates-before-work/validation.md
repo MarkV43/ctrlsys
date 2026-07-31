@@ -67,8 +67,9 @@ probe undercounts by 3.
 
 Diffing `cargo run` output does **not** work: `src/main.rs` prints only
 `Elapsed: <duration>`, which is nondeterministic timing and no simulation values at
-all. (That absence is the gap Phase 9's `Recorder` closes, and the reason Phase 6's
-golden tests cannot be written against `main.rs` as it stands.)
+all. (That absence is the gap the probes phase's `Recorder` closes, and the reason the
+golden-test phase cannot be written against `main.rs` as it stands. Both were
+renumbered after this phase landed — probes moved ahead of the test phases.)
 
 The method used instead, and the one to repeat for any later phase claiming no
 behaviour change:

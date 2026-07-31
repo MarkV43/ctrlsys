@@ -17,7 +17,9 @@
 **Consequence of item 3, not an expansion of scope:** turning on
 `undocumented_unsafe_blocks` and `multiple_unsafe_ops_per_block` makes 16 additional
 use sites hard errors, which the roadmap's "~24 clippy warnings" estimate does not
-include. Measured: **19 hard errors** total once the lints are on. This subsumes the
+include. Measured: **22 hard errors** total once the lints are on — the three doc
+lints are errors too, once denied in `lib.rs` rather than probed from the command
+line, where `#![warn(clippy::pedantic)]` outranks the flag. This subsumes the
 residual the roadmap folded into Phase 0 from Phase 1 (`AlignedBuffer`'s undocumented
 unsafe blocks) — the lint finds **four** such blocks in `buffer.rs`, not the three the
 roadmap names.
@@ -34,8 +36,9 @@ roadmap names.
 
 ### Warnings in code a later phase will rewrite: `#[expect]`, naming the owning phase
 
-Several lint failures sit in code that Phases 2, 4, 5 and 7 will delete or rewrite.
-Fixing them properly means pulling those phases forward and abandoning "nothing
+Several lint failures sit in code that the UB-fix, offset-deletion, `graph.rs`
+correctness and discrete-hardening phases will delete or rewrite. Fixing them
+properly means pulling those phases forward and abandoning "nothing
 functional changes"; suppressing them with `#[allow]` leaves a marker that stays
 silently valid forever after the owning phase lands.
 
@@ -43,9 +46,15 @@ silently valid forever after the owning phase lands.
 fixes the code, the expectation itself starts warning, so the marker cannot rot — the
 gate that Phase 0 installs is also what removes Phase 0's own concessions.
 
-Applied to: the dead `to_input_offset`/`num_bytes` fields (Phase 4), the Tarjan
-`isize`/`usize` casts (Phase 5), the two `float_cmp` sites (Phase 7), the `link.rs`
-`addr_of!` blocks (Phase 4), and the two UB sites (Phase 2).
+Applied to: the dead `to_input_offset`/`num_bytes` fields (offset deletion), the
+Tarjan `isize`/`usize` casts (`graph.rs` correctness), the two `float_cmp` sites
+(discrete-system hardening), the `link.rs` `addr_of!` blocks (offset deletion), and
+the two UB sites (Phase 2).
+
+Reason strings name the phase by **title** as well as number. Numbers rot: the
+roadmap was renumbered immediately after this phase landed, when probes moved ahead
+of the test-writing phases, and three of these markers pointed at the wrong phase
+until they were corrected.
 
 ### The four unsafe blocks that get a marker instead of a comment
 
@@ -69,7 +78,8 @@ sites say plainly in the reason that the block is known-unsound. The marker is a
 ### Dev-dependencies added now, unused
 
 `proptest`, `trybuild` and `approx` are added in this phase even though nothing uses
-them until Phases 5, 6 and 9. Following the roadmap as written; the cost is three
+them until the `graph.rs` correctness, golden-test and compile-fail work
+respectively. Following the roadmap as written; the cost is three
 unused dev-deps in the lockfile, and the benefit is that `tech-stack.md`'s planned
 table and `Cargo.toml` agree from here on.
 
@@ -111,12 +121,12 @@ that `clippy::missing_safety_doc` will never fire on, which is exactly why
 Phase 0 establishes the measuring instruments; it does not use them. Any clippy fix
 that would alter runtime semantics belongs to its owning phase. This binds most
 sharply on the two `float_cmp` warnings in `src/system/discrete/` — `holder.rs:98` and
-`mod.rs:48` — which sit next to the `FirstOrderHold` divide-by-zero NaN that Phase 7
-owns. Changing a float comparison there is a numerical change wearing a lint fix's
-clothes. `#[expect]` them.
+`mod.rs:48` — which sit next to the `FirstOrderHold` divide-by-zero NaN that the
+discrete-system hardening phase owns. Changing a float comparison there is a
+numerical change wearing a lint fix's clothes. `#[expect]` them.
 
-Verification is concrete: the `src/main.rs` demo must produce byte-identical output
-before and after.
+Verification is concrete, but not by diffing the demo's stdout: `src/main.rs` prints
+only a timing line. See `validation.md` for the probe-and-trace method actually used.
 
 ### Contracts must survive Phases 2 and 3
 
@@ -138,5 +148,5 @@ Write them so the Phase 2 and 3 diffs touch code, not contracts.
 Ordering principle from the roadmap: make the gates real, then fix what they catch.
 Every later phase's correctness argument is measured by the four gates, so a gate that
 is enabled but ignored is worse than one never enabled. Phase 0 is also the phase that
-converts the roadmap's prose findings into machine-checked facts — the 19 hard errors
+converts the roadmap's prose findings into machine-checked facts — the 22 hard errors
 it surfaces are the first evidence that the gates work.

@@ -105,12 +105,12 @@ fn tarjan_scc(adj: &Vec<Vec<usize>>) -> (Vec<usize>, Vec<Vec<usize>>) {
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
-        reason = "Phase 5 rewrites this. The casts exist only because `index` uses \
-                  `isize` with `-1` as an unvisited sentinel; an `Option<usize>` \
-                  removes them entirely. Phase 5 also has to delete the condensation \
-                  pass and fix intra-SCC ordering here, so changing the \
-                  representation now would collide with it. See specs/roadmap.md \
-                  Phase 5."
+        reason = "The `graph.rs` correctness phase rewrites this. The casts exist \
+                  only because `index` uses `isize` with `-1` as an unvisited \
+                  sentinel; an `Option<usize>` removes them entirely. That phase \
+                  also has to delete the condensation pass and fix intra-SCC \
+                  ordering here, so changing the representation now would collide \
+                  with it. See specs/roadmap.md, Phase 6 at time of writing."
     )]
     fn strongconnect(
         v: usize,

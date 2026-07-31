@@ -162,6 +162,27 @@ of producer ids built via `From<(&T, &U)>` / `From<(&T, &U, &V)>`, so a mux is w
 as a tuple of references at the call site. `link` requires `SI: SystemIn<In = Out>`,
 so a producer/consumer type mismatch is a compile error.
 
+**Ports are being split.** Today `add_system` returns one handle implementing both
+`SystemIn` and `SystemOut`, so nothing in the type system distinguishes a system's
+input side from its output side. The agreed design returns a pair:
+
+```rust
+let (f_i, f_o) = pool.add_system(Filter);
+pool.link(s_o, &f_i);
+let recv = pool.probe(&f_o);
+```
+
+The reason is `probe`, not `link`: a probe attaches to an *output*, and with one
+combined handle `pool.probe(&f_i)` type-checks and means nothing. Scheduled together
+with the deletion below, because both restructure the same three types.
+
+This does **not** make self-feed a compile-time error — `pool.link(f_o, &f_i)` for the
+same system still type-checks, since ids are runtime values. The
+`assert!(!from.ids().contains(&to.id()))` in `link` stays, and stays load-bearing: it
+is what every `// SAFETY:` comment in `system/mod.rs` cites for the absence of
+shared/unique aliasing on a buffer. Per Article 2 it carries a comment saying why it
+cannot be lifted to the type system.
+
 `SystemLayout`, `SystemLink::to_input_offset` and `SystemLink::num_bytes` are
 **vestigial** — carried over from the flat-buffer design and no longer read by the
 solver. Their removal is a roadmap phase.
@@ -176,6 +197,18 @@ with no simulation.
 
 Owns buffers and links, computes the order once per `simulate`, runs the step loop.
 
+Also the home of observation. `pool.probe(&f_o)` attaches a recorder to an output port
+and `pool.probe((&f_o, &s_o))` to a mux of them, reusing the same `From<(&T, &U)>`
+conversion `link` uses. A probe is an ordinary block that returns `f64::INFINITY`, so
+it contributes nothing to the `next_time` minimum and cannot change the step sequence —
+observation is non-invasive by construction, and there is a test asserting it rather
+than only the argument.
+
+`pool.sample(&f_o, timestep)` — a fixed-interval sampler — is **not** in that category.
+Requesting periodic time events changes the step sequence, which for a rate-dependent
+block changes the trajectory: exactly the failure `mission.md` Article 5 records. It
+waits until rate-independence holds.
+
 ## Decisions recorded
 
 | Decision | Choice | Consequence |
@@ -183,5 +216,7 @@ Owns buffers and links, computes the order once per `simulate`, runs the step lo
 | `no_std` | Not supported | `Box<dyn>`, `Vec`, `HashSet`, `std::sync::mpsc` used freely. Retrofitting means replacing collections and the probe transport. |
 | Composite signals | Flat tuples only | No nesting, so `link` never unifies nested shapes and inference stays simple. |
 | Named-field signals | Atomic for now | Decomposing them needs a derive macro; deferred, not rejected. |
+| Port handles | Split: `let (f_i, f_o) = pool.add_system(…)` | `probe` takes an output port, so probing an input is a compile error. Does not make self-feed compile-time; that check stays runtime. |
+| Observation | `probe` every step, non-invasive | Returns `f64::INFINITY`, adding no time event. A periodic `sample` would perturb the step sequence, so it waits for rate-independence. |
 | Time delivery | Absolute only | See `mission.md` Article 6. |
 | Error style | `assert!` for user contracts | See `mission.md` Article 4. |

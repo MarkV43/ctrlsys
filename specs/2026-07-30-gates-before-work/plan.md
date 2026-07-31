@@ -109,9 +109,11 @@ that compiles (statement, else enclosing fn).
       `semicolon_if_nothing_returned` ×2, `new_without_default` on `SystemPool`.
 - [x] `#[expect]` (not fix) the phase-owned remainder:
       - `src/pool/link.rs:7` — dead `to_input_offset` / `num_bytes` fields → **Phase 4**
-      - `src/pool/graph.rs:116,137,141` — `isize`/`usize` cast lints in Tarjan → **Phase 5**
+      - `src/pool/graph.rs:116,137,141` — `isize`/`usize` cast lints in Tarjan →
+        **`graph.rs` correctness**
       - `src/system/discrete/holder.rs:98`, `src/system/discrete/mod.rs:48` — `float_cmp`
-        → **Phase 7** (fixing these changes numerical behaviour, which this phase forbids)
+        → **discrete-system hardening** (fixing these changes numerical behaviour,
+        which this phase forbids)
 
 ## 7. Verify and record
 

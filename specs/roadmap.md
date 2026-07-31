@@ -7,6 +7,14 @@ argument rests on them.
 Each phase is small enough to land in one sitting. A phase is done when its
 **Done when** items hold and the four gates in `tech-stack.md` are green.
 
+**Renumbered after Phase 0.** Probes and recording moved from Phase 9 to Phase 5, and
+the port split was folded into Phase 4; old Phases 5–8 shifted up by one, Phase 10 kept
+its number. Observation has to exist before the phases that test values, and
+`cargo +nightly miri test` currently runs no simulation at all, so the Miri gate is
+gating nothing until a recorded trajectory test exists. Phase numbers cited elsewhere
+in the repo — including `#[expect]` reason strings — now name the phase by title too,
+because this renumber silently invalidated three of them.
+
 Written against `3fe6860`. The slice-per-link design introduced in `0baca90` and
 `3fe6860` removed an entire class of planned work — composite layout, offset
 computation and input-coverage checking are all unnecessary when each input is its own
@@ -100,28 +108,100 @@ naming it, covered by a `#[should_panic]` test.
 
 ---
 
-## Phase 4 — Delete the vestigial offset machinery
+## Phase 4 — Delete the vestigial offset machinery, split the port handles
+
+Two changes to the same types, done in one pass because doing them separately means
+editing `SystemRef`, `SystemIn` and `SystemOut` twice.
+
+### Deletion
 
 Slice-per-link made the flat-buffer bookkeeping unnecessary. The compiler already
 agrees: `fields to_input_offset and num_bytes are never read`.
 
 - Delete `SystemLayout`, `SystemLink::to_input_offset`, `SystemLink::num_bytes`, and
-  `SystemOut::layouts`.
+  `SystemOut::layouts`. Phase 0 left `#[expect(dead_code, …)]` on the two fields; those
+  attributes go with them, and the expectation firing is what proves the deletion
+  landed.
 - `SystemMux` reduces to an ordered list of producer ids.
+- Phase 0 also left `#[expect]` on the two `addr_of!` blocks in `link.rs` — the whole
+  `MaybeUninit` offset computation disappears here.
 - This also removes a latent bug rather than requiring it to be fixed:
-  `src/pool/link.rs:141`, in `From<(&T, &U, &V)>`, builds `ids` from `t` and `u` only —
+  `src/pool/link.rs:163`, in `From<(&T, &U, &V)>`, builds `ids` from `t` and `u` only —
   `v.ids()` is missing. Since `layouts` gets three entries and `ids` gets two,
   `add_links_to` would index `self.ids[2]` and panic. Deleting layouts removes the
   mismatch; the `ids` chain still needs `v` added.
 - Reconsider `has_unique_elements` in `SystemPool::link` — it forbids muxing one
   producer into two inputs of the same consumer, which is legal and useful.
 
-**Done when:** `cargo clippy` reports no dead fields and a three-way mux links
-correctly, covered by a test.
+### Split ports
+
+`add_system` returns one handle that implements both `SystemIn` and `SystemOut`, so
+nothing distinguishes a system's input side from its output side. Split it:
+
+```rust
+let (f_i, f_o) = pool.add_system(Filter);
+pool.link(s_o, &f_i);
+```
+
+The payoff is in Phase 5: `probe` takes an *output* port, so probing an input becomes a
+compile error rather than something that type-checks and means nothing.
+
+**What this does not buy, so it must not be claimed:** self-feed stays a runtime check.
+`pool.link(f_o, &f_i)` for the same system still type-checks, because ids are runtime
+values. That `assert!(!from.ids().contains(&to.id()))` is load-bearing for soundness —
+every `// SAFETY:` comment written in Phase 0 cites it — and per Article 2 it keeps its
+comment explaining why it cannot be a compile-time check.
+
+**Done when:** `cargo clippy` reports no dead fields, and a three-way mux builds the
+correct `ids` chain, covered by a test that inspects the constructed links. That test
+is *structural*, not numerical — asserting the values actually flow through a
+three-way mux needs a probe, and belongs to Phase 5.
 
 ---
 
-## Phase 5 — `graph.rs` correctness
+## Phase 5 — Probes and recording
+
+Moved ahead of the test-writing phases (was Phase 9). Four later phases need to observe
+signal values — the mux trajectory above, the golden tests, the ZOH/FOH staircase
+tests, and the PI example — and the old ordering had Phase 6 written against `println!`
+and retrofitted afterwards.
+
+There is a second reason. `cargo +nightly miri test` currently exercises **no
+simulation at all**: the only test in the tree reads source files. Miri is one of the
+four merge gates and is presently gating nothing except by way of `miri run` over
+`src/main.rs`. A recorded trajectory test is what makes that gate real.
+
+Depends on Phase 2 (probes ride the same `raw_update` path, so their tests are
+meaningless while Miri aborts on the UB) and on Phase 4 (mux probing builds on
+`SystemMux`, and `probe` takes a split output handle).
+
+- `Recorder` trait; a `Vec`-backed implementation for tests and an `mpsc::Sender`
+  implementation for live consumers.
+- `pool.probe(&f_o) -> Receiver<Sample<T>>` as the ergonomic front end, taking an
+  output port rather than a system.
+- Mux probing: `pool.probe((&f_o, &s_o)) -> Receiver<Sample<(T, U)>>`, reusing the
+  `From<(&T, &U)>` conversion that already builds a `SystemMux`.
+- `probe` behaves as a continuous block, recording every step. It returns
+  `f64::INFINITY`, so it contributes nothing to the `next_time` minimum and **cannot
+  change the step sequence** — non-invasive by construction. Add a test that asserts
+  this rather than trusting the argument: a model's trajectory must be unchanged by
+  attaching a probe to it.
+- Probes registered before `simulate`; document the unbounded-growth caveat.
+
+**Deferred within this phase: `pool.sample(&f_o, timestep)`.** A fixed-interval sampler
+requests time events, which changes the solver's step sequence — the exact mechanism
+behind the precedent recorded in `mission.md` Article 5, where an unrelated block moved
+a step response from 0.431 to 0.994. Until rate-independence is fixed (Phase 7), a
+sampler can change the numbers it exists to measure. Revisit once Phase 7 lands; if it
+ships before then it needs a loud caveat in its own docs.
+
+**Done when:** a simulation test records a trajectory through a `Vec` recorder and
+asserts against it, `cargo +nightly miri test` runs that test, and attaching a probe to
+a model provably does not alter its trajectory.
+
+---
+
+## Phase 6 — `graph.rs` correctness
 
 Tests first — the ordering bug is silent, so the test must fail before it passes.
 
@@ -138,7 +218,9 @@ Tests first — the ordering bug is silent, so the test must fail before it pass
 
 ---
 
-## Phase 6 — Analytical golden tests
+## Phase 7 — Analytical golden tests
+
+Reads trajectories through Phase 5's `Vec` recorder, not `println!`.
 
 - A first-order lag driven by a step, asserted against `1 - e^(-t/τ)` within tolerance.
 - A rate-independence test: the same block in a model containing an unrelated faster
@@ -146,12 +228,14 @@ Tests first — the ordering bug is silent, so the test must fail before it pass
   t = 1.0 — and is the executable form of Article 6.
 - Rewrite `Filter` in `src/main.rs` to the rate-independent template: derive `dt` from
   its own stored last-update time.
+- Once rate-independence holds, revisit `pool.sample(&f_o, timestep)`, deferred out of
+  Phase 5 because a fixed-interval sampler perturbs the step sequence.
 
 **Done when:** both tests pass.
 
 ---
 
-## Phase 7 — Discrete-system hardening
+## Phase 8 — Discrete-system hardening
 
 `HeldSystem` and the `Holder` implementations are new and not yet covered by tests.
 
@@ -162,14 +246,18 @@ Tests first — the ordering bug is silent, so the test must fail before it pass
 - `HeldSystem::update` advances `self.last_time += req_dt` then returns
   `self.last_time + 2.0 * req_dt`. Confirm whether the factor of two is intended; the
   next event after an update at `last_time` would normally be `last_time + req_dt`.
+- Phase 0 left `#[expect(clippy::float_cmp, …)]` on the two `f64::MIN` sentinel tests,
+  in `holder.rs` and `discrete/mod.rs`, deferred here because changing how
+  initialisation is detected is part of the first-sample fix rather than a lint sweep.
 - Tests: a ZOH-held discrete block sampled at a known rate produces a staircase; an
-  FOH-held block interpolates linearly between samples.
+  FOH-held block interpolates linearly between samples. Both read trajectories through
+  Phase 5's recorder.
 
 **Done when:** both holders are covered by tests and no path divides by a zero step.
 
 ---
 
-## Phase 8 — Block contract completion
+## Phase 9 — Block contract completion
 
 - Rename `is_stateful` to `breaks_algebraic_loops`, default `false`. Document the
   distinction: a block may have state *and* direct feedthrough (a PID with a
@@ -183,18 +271,6 @@ rejected as an algebraic loop.
 
 ---
 
-## Phase 9 — Probes and recording
-
-- `Recorder` trait; a `Vec`-backed implementation for tests and an `mpsc::Sender`
-  implementation for live consumers.
-- `pool.probe(&sys) -> Receiver<Sample<T>>` as the ergonomic front end.
-- Probes registered before `simulate`; document the unbounded-growth caveat.
-
-**Done when:** the golden tests read trajectories from a `Vec` recorder rather than
-from `println!`.
-
----
-
 ## Phase 10 — Block library seed
 
 Enough blocks to demonstrate the design, not a comprehensive library.
@@ -202,7 +278,7 @@ Enough blocks to demonstrate the design, not a comprehensive library.
 - `Gain`, `Sum`, `Saturation`, `Integrator`, `Step` (reusing the existing
   `ZeroOrderHold` and `FirstOrderHold`).
 - A closed-loop PI-controlled first-order plant as the headline example, asserted
-  against the analytical solution.
+  against the analytical solution through Phase 5's recorder.
 
 **Done when:** the PI example runs, is numerically correct, and is the crate-level doc
 example.

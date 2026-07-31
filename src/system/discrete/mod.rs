@@ -47,11 +47,12 @@ where
 
         #[expect(
             clippy::float_cmp,
-            reason = "Phase 7 owns this, as with the matching sentinel test in \
-                      `holder.rs`. Compared against the `f64::MIN` sentinel rather \
-                      than a computed value, so exact equality is correct; changing \
-                      it belongs with Phase 7's first-sample rework. See \
-                      specs/roadmap.md Phase 7."
+            reason = "The discrete-system hardening phase owns this, as with the \
+                      matching sentinel test in `holder.rs`. Compared against the \
+                      `f64::MIN` sentinel rather than a computed value, so exact \
+                      equality is correct; changing it belongs with that phase's \
+                      first-sample rework. See specs/roadmap.md, Phase 8 at time of \
+                      writing."
         )]
         if self.last_time == f64::MIN {
             self.last_time = time;
