@@ -23,24 +23,23 @@ deletion phase.
 
 ---
 
-## Phase 0 — Gates before work
+## Phase 0 — Gates before work ✅ done in `a413e05`
 
-> 🚧 In progress — see [specs/2026-07-30-gates-before-work/](2026-07-30-gates-before-work/) (branch `feature/gates-before-work`)
+Spec: [specs/2026-07-30-gates-before-work/](2026-07-30-gates-before-work/).
 
-Nothing functional changes. Establishes the checks every later phase is measured by.
+Nothing functional changed — the trajectory is bit-identical across 2016 samples.
+`[dependencies]` is empty, the eight-lint block is in `src/lib.rs`, the 7 `# Safety`
+contracts in `src/system/mod.rs` are written, and `fmt` / `clippy -D warnings` /
+`test` are all green.
 
-- Empty `[dependencies]`; remove `zerocopy` (already unused by the current code).
-- Add dev-dependencies (`proptest`, `trybuild`, `approx`).
-- Add the lint block from `tech-stack.md` to `src/lib.rs` — all six unsafe-related
-  lints, not just `undocumented_unsafe_blocks`.
-- `tests/safety_docs.rs` is in the repo and **currently fails on 7 declarations** in
-  `src/system/mod.rs` (lines 55, 60, 68, 74, 85, 100, 119). Write their contracts:
-  what a caller must guarantee about slice count, slice length, and alignment.
-- Clear the ~24 clippy warnings, including the missing `# Panics` on
-  `AlignedBuffer::new` and the missing `# Errors` on `simulate`.
+Two things it turned up that later phases depend on:
 
-**Done when:** `cargo clippy --all-targets -- -D warnings` is clean and
-`cargo test --test safety_docs` passes.
+- The estimate of "~24 clippy warnings" was low. The six unsafe lints had never been
+  run; with the full block denied in `lib.rs` they produce **22 hard errors**. Nine
+  `#[expect]` markers remain, each naming the phase that removes it.
+- **`cargo +nightly miri test` exercises no simulation at all** — the only test in the
+  tree reads source files. The Miri gate currently works only via `miri run` over
+  `src/main.rs`. Phase 5 is what makes it real.
 
 ---
 
