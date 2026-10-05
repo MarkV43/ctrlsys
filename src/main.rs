@@ -76,9 +76,7 @@ impl DiscreteSystem for DiscreteTest {
 
 fn main() {
     let mut pool = SystemPool::new();
-
     let filter = pool.add_system(Filter);
-
     let inp = pool.add_system(Input {
         step_time: 0.15,
         value: 0.0,
@@ -87,17 +85,13 @@ fn main() {
     pool.link(inp, &filter);
 
     let mux = (&inp, &filter);
-
     let test = pool.add_system(Test);
 
     pool.link(mux, &test);
 
     let start = Instant::now();
-
     let discr = DiscreteTest { state: [0.0; 2] };
-
     let dsys = discr.with_holder(ZeroOrderHold::new());
-
     let discr = pool.add_system(dsys);
 
     pool.link(test, &discr);
